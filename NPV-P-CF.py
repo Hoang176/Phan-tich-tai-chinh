@@ -42,7 +42,6 @@ CAPACITY_FACTORS_PERCENT = tuple(range(25, 37))
 # Excel constants, khai báo trực tiếp để không phụ thuộc win32com.client.constants.
 XL_CALCULATION_MANUAL = -4135
 XL_CALCULATION_DONE = 0
-XL_DECIMAL_SEPARATOR = 3
 
 
 def resolve_workbook_path(arguments: Sequence[str]) -> Path:
@@ -178,7 +177,7 @@ def calculate_sensitivity(workbook_path: Path):
         capacity_cell.Value2 = original_capacity
         cf_cell.Value2 = original_cf
 
-        decimal_separator = str(excel.International(XL_DECIMAL_SEPARATOR))
+        decimal_separator = str(excel.DecimalSeparator)
         return results, decimal_separator
 
     finally:
