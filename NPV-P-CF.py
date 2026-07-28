@@ -14,7 +14,9 @@ Yêu cầu:
 
 Kết quả:
     - In bảng Project NPV (tỷ VND) trên terminal.
-    - Copy cùng bảng ở dạng TSV vào clipboard để dán trực tiếp vào Excel.
+    - Tạo một file Excel mới chứa bảng kết quả trong cùng thư mục với workbook
+      nguồn. Tên mặc định là NPV-P-CF.xlsx; nếu đã tồn tại, chương trình tự
+      thêm hậu tố _1, _2, ... để không ghi đè.
     - Không lưu thay đổi vào PTKTTC_Ver1.xlsx.
 """
 
@@ -28,6 +30,7 @@ from typing import Sequence
 
 
 WORKBOOK_NAME = "PTKTTC_Ver1.xlsx"
+OUTPUT_WORKBOOK_NAME = "NPV-P-CF.xlsx"
 
 INPUT_SHEET = "Input"
 CAPACITY_CELL = "D12"
@@ -39,9 +42,14 @@ PROJECT_NPV_CELL = "E11"
 CAPACITIES_MW = tuple(range(60, 181, 20))
 CAPACITY_FACTORS_PERCENT = tuple(range(25, 37))
 
-# Excel constants, khai báo trực tiếp để không phụ thuộc win32com.client.constants.
+# Excel constants, khai báo trực tiếp để không phụ thuộc
+# win32com.client.constants.
 XL_CALCULATION_MANUAL = -4135
 XL_CALCULATION_DONE = 0
+XL_OPEN_XML_WORKBOOK = 51
+XL_CENTER = -4108
+XL_THIN = 2
+XL_CONTINUOUS = 1
 
 
 def resolve_workbook_path(arguments: Sequence[str]) -> Path:
@@ -66,6 +74,22 @@ def resolve_workbook_path(arguments: Sequence[str]) -> Path:
     return workbook_path
 
 
+def resolve_output_path(workbook_path: Path) -> Path:
+    """Tạo đường dẫn output mới, không ghi đè file kết quả đã có."""
+    output_path = workbook_path.with_name(OUTPUT_WORKBOOK_NAME)
+    if not output_path.exists():
+        return output_path
+
+    stem = output_path.stem
+    suffix = output_path.suffix
+    index = 1
+    while True:
+        candidate = output_path.with_name(f"{stem}_{index}{suffix}")
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
 def wait_for_excel(excel, timeout_seconds: float = 300.0) -> None:
     """Chờ Excel tính xong hoặc báo lỗi nếu vượt quá thời gian cho phép."""
     deadline = time.monotonic() + timeout_seconds
@@ -77,8 +101,132 @@ def wait_for_excel(excel, timeout_seconds: float = 300.0) -> None:
         time.sleep(0.05)
 
 
+def excel_color(red: int, green: int, blue: int) -> int:
+    """Đổi RGB sang giá trị màu mà Excel COM sử dụng."""
+    return red + green * 256 + blue * 65536
+
+
+def save_results_workbook(excel, results, output_path: Path) -> None:
+    """Tạo workbook Excel mới và ghi bảng Project NPV vào đó."""
+    result_workbook = None
+    try:
+        result_workbook = excel.Workbooks.Add()
+        result_sheet = result_workbook.Worksheets(1)
+        result_sheet.Name = "Project NPV"
+
+        # Chỉ giữ lại một worksheet trong file kết quả.
+        while result_workbook.Worksheets.Count > 1:
+            result_workbook.Worksheets(
+                result_workbook.Worksheets.Count
+            ).Delete()
+
+        last_column = len(CAPACITIES_MW) + 1
+        last_row = len(CAPACITY_FACTORS_PERCENT) + 3
+
+        title_range = result_sheet.Range(
+            result_sheet.Cells(1, 1),
+            result_sheet.Cells(1, last_column),
+        )
+        title_range.Merge()
+        title_range.Value2 = "PROJECT NPV THEO CÔNG SUẤT VÀ HỆ SỐ CÔNG SUẤT"
+
+        unit_range = result_sheet.Range(
+            result_sheet.Cells(2, 1),
+            result_sheet.Cells(2, last_column),
+        )
+        unit_range.Merge()
+        unit_range.Value2 = "Đơn vị: tỷ VND"
+
+        headers = ("CF \\ MW", *CAPACITIES_MW)
+        table_rows = [
+            (cf_percent / 100.0, *row)
+            for cf_percent, row in zip(CAPACITY_FACTORS_PERCENT, results)
+        ]
+
+        header_range = result_sheet.Range(
+            result_sheet.Cells(3, 1),
+            result_sheet.Cells(3, last_column),
+        )
+        header_range.Value2 = (headers,)
+
+        data_range = result_sheet.Range(
+            result_sheet.Cells(4, 1),
+            result_sheet.Cells(last_row, last_column),
+        )
+        data_range.Value2 = tuple(table_rows)
+
+        # Định dạng tối giản, rõ ràng để có thể sử dụng ngay.
+        dark_blue = excel_color(31, 78, 121)
+        light_blue = excel_color(221, 235, 247)
+        light_border = excel_color(191, 191, 191)
+
+        title_range.Interior.Color = dark_blue
+        title_range.Font.Color = excel_color(255, 255, 255)
+        title_range.Font.Bold = True
+        title_range.Font.Size = 14
+        title_range.HorizontalAlignment = XL_CENTER
+        title_range.RowHeight = 24
+
+        unit_range.Font.Italic = True
+        unit_range.HorizontalAlignment = XL_CENTER
+
+        header_range.Interior.Color = light_blue
+        header_range.Font.Bold = True
+        header_range.HorizontalAlignment = XL_CENTER
+
+        row_header_range = result_sheet.Range(
+            result_sheet.Cells(4, 1),
+            result_sheet.Cells(last_row, 1),
+        )
+        row_header_range.Interior.Color = light_blue
+        row_header_range.Font.Bold = True
+        row_header_range.HorizontalAlignment = XL_CENTER
+        row_header_range.NumberFormat = "0%"
+
+        capacity_header_range = result_sheet.Range(
+            result_sheet.Cells(3, 2),
+            result_sheet.Cells(3, last_column),
+        )
+        capacity_header_range.NumberFormat = '0 "MW"'
+
+        npv_range = result_sheet.Range(
+            result_sheet.Cells(4, 2),
+            result_sheet.Cells(last_row, last_column),
+        )
+        npv_range.NumberFormat = '#,##0.00;[Red](#,##0.00);-'
+
+        table_range = result_sheet.Range(
+            result_sheet.Cells(3, 1),
+            result_sheet.Cells(last_row, last_column),
+        )
+        for border_index in range(7, 13):
+            border = table_range.Borders(border_index)
+            border.LineStyle = XL_CONTINUOUS
+            border.Weight = XL_THIN
+            border.Color = light_border
+
+        result_sheet.Columns(1).ColumnWidth = 12
+        result_sheet.Range(
+            result_sheet.Columns(2),
+            result_sheet.Columns(last_column),
+        ).ColumnWidth = 14
+        result_sheet.Range("A1").Select()
+        excel.ActiveWindow.DisplayGridlines = False
+
+        result_workbook.SaveAs(
+            str(output_path),
+            FileFormat=XL_OPEN_XML_WORKBOOK,
+        )
+        result_workbook.Close(SaveChanges=False)
+        result_workbook = None
+
+    finally:
+        if result_workbook is not None:
+            result_workbook.Close(SaveChanges=False)
+
+
 def calculate_sensitivity(workbook_path: Path):
-    """Tính Project NPV cho toàn bộ tổ hợp MW và CF bằng Microsoft Excel."""
+    """Tính Project NPV và lưu toàn bộ kết quả bằng Microsoft Excel."""
     try:
         import pythoncom
         import win32com.client
@@ -88,13 +236,14 @@ def calculate_sensitivity(workbook_path: Path):
             "    py -m pip install pywin32"
         ) from exc
 
+    output_path = resolve_output_path(workbook_path)
     pythoncom.CoInitialize()
     excel = None
     workbook = None
 
     try:
-        # DispatchEx tạo một phiên Excel riêng, không can thiệp workbook người dùng
-        # đang mở trong các cửa sổ Excel khác.
+        # DispatchEx tạo một phiên Excel riêng, không can thiệp workbook người
+        # dùng đang mở trong các cửa sổ Excel khác.
         excel = win32com.client.DispatchEx("Excel.Application")
         excel.Visible = False
         excel.DisplayAlerts = False
@@ -177,8 +326,8 @@ def calculate_sensitivity(workbook_path: Path):
         capacity_cell.Value2 = original_capacity
         cf_cell.Value2 = original_cf
 
-        decimal_separator = str(excel.DecimalSeparator)
-        return results, decimal_separator
+        save_results_workbook(excel, results, output_path)
+        return results, output_path
 
     finally:
         if workbook is not None:
@@ -218,45 +367,6 @@ def format_terminal_table(results: Sequence[Sequence[float]]) -> str:
     )
 
 
-def format_clipboard_table(
-    results: Sequence[Sequence[float]], decimal_separator: str
-) -> str:
-    """Tạo TSV dùng dấu thập phân theo thiết lập Excel trên máy."""
-
-    def format_number(value: float) -> str:
-        text = f"{value:.2f}"
-        if decimal_separator != ".":
-            text = text.replace(".", decimal_separator)
-        return text
-
-    rows = [["CF \\ MW", *(str(mw) for mw in CAPACITIES_MW)]]
-    rows.extend(
-        [
-            [f"{cf_percent}%", *(format_number(value) for value in row)]
-            for cf_percent, row in zip(CAPACITY_FACTORS_PERCENT, results)
-        ]
-    )
-    return "\r\n".join("\t".join(row) for row in rows)
-
-
-def copy_to_clipboard(text: str) -> None:
-    """Copy Unicode text vào clipboard bằng thư viện chuẩn tkinter."""
-    try:
-        import tkinter
-
-        root = tkinter.Tk()
-        root.withdraw()
-        root.clipboard_clear()
-        root.clipboard_append(text)
-        # update() chuyển dữ liệu sang Windows clipboard trước khi đóng cửa sổ.
-        root.update()
-        root.destroy()
-    except Exception as exc:
-        raise RuntimeError(
-            "Đã tính xong nhưng không copy được bảng vào clipboard."
-        ) from exc
-
-
 def main() -> int:
     try:
         if hasattr(sys.stdout, "reconfigure"):
@@ -265,17 +375,13 @@ def main() -> int:
             sys.stderr.reconfigure(encoding="utf-8")
 
         workbook_path = resolve_workbook_path(sys.argv[1:])
-        results, decimal_separator = calculate_sensitivity(workbook_path)
-
-        terminal_table = format_terminal_table(results)
-        clipboard_table = format_clipboard_table(results, decimal_separator)
-        copy_to_clipboard(clipboard_table)
+        results, output_path = calculate_sensitivity(workbook_path)
 
         print()
-        print(terminal_table)
+        print(format_terminal_table(results))
         print()
-        print("Đã copy bảng vào clipboard. Có thể dán trực tiếp vào Excel.")
-        print(f'File "{WORKBOOK_NAME}" không bị thay đổi.')
+        print(f'Đã tạo file kết quả: "{output_path}"')
+        print(f'File nguồn "{WORKBOOK_NAME}" không bị thay đổi.')
         return 0
 
     except Exception as exc:
