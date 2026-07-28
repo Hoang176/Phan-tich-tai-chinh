@@ -102,7 +102,6 @@ def calculate_sensitivity(workbook_path: Path):
         excel.ScreenUpdating = False
         excel.EnableEvents = False
         excel.AskToUpdateLinks = False
-        excel.Calculation = XL_CALCULATION_MANUAL
 
         workbook = excel.Workbooks.Open(
             str(workbook_path),
@@ -112,6 +111,14 @@ def calculate_sensitivity(workbook_path: Path):
             Notify=False,
             AddToMru=False,
         )
+
+        # Một số phiên bản Excel chỉ cho đổi chế độ tính toán sau khi đã mở
+        # workbook. Nếu Excel vẫn từ chối, CalculateFullRebuild() bên dưới
+        # vẫn buộc mô hình tính lại đầy đủ cho từng phương án.
+        try:
+            excel.Calculation = XL_CALCULATION_MANUAL
+        except Exception:
+            pass
 
         input_sheet = workbook.Worksheets(INPUT_SHEET)
         output_sheet = workbook.Worksheets(OUTPUT_SHEET)
