@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Lập bảng độ nhạy Project NPV theo công suất lắp đặt và hệ số công suất.
+Lập các bảng độ nhạy theo công suất lắp đặt và hệ số công suất:
+Project NPV, Equity NPV, Project IRR và Equity IRR.
 
 Mặc định, chương trình mở PTKTTC_Ver1.xlsx nằm cùng thư mục với file Python.
 Có thể truyền đường dẫn workbook làm tham số:
@@ -13,8 +14,9 @@ Yêu cầu:
           py -m pip install pywin32
 
 Kết quả:
-    - In bảng Project NPV (tỷ VND) trên terminal.
-    - Tạo một workbook Excel mới, đưa bảng kết quả vào và giữ workbook mở.
+    - In bốn bảng kết quả trên terminal.
+    - Tạo một workbook Excel mới, đưa bốn bảng vào cùng một sheet.
+    - Chỉ tính lại mô hình một lần cho mỗi phương án rồi đọc cả bốn chỉ tiêu.
     - Không tự động lưu workbook kết quả; người dùng tự chọn Save/Save As.
     - Không lưu thay đổi vào PTKTTC_Ver1.xlsx.
 """
@@ -32,13 +34,58 @@ WORKBOOK_NAME = "PTKTTC_Ver1.xlsx"
 
 INPUT_SHEET = "Input"
 CAPACITY_CELL = "D12"
-CF_CELL = "D44"
+CF_CELL = "D41"
 
 OUTPUT_SHEET = "Summary"
-PROJECT_NPV_CELL = "E11"
+
+RESULT_METRICS = (
+    {
+        "key": "project_npv",
+        "title": "PROJECT NPV",
+        "cell": "E11",
+        "unit": "tỷ VND",
+        "number_format": '#,##0.00;[Red](#,##0.00);-',
+        "terminal_format": ",.2f",
+    },
+    {
+        "key": "equity_npv",
+        "title": "EQUITY NPV",
+        "cell": "E12",
+        "unit": "tỷ VND",
+        "number_format": '#,##0.00;[Red](#,##0.00);-',
+        "terminal_format": ",.2f",
+    },
+    {
+        "key": "project_irr",
+        "title": "PROJECT IRR",
+        "cell": "B11",
+        "unit": "%",
+        "number_format": '0.00%;[Red](0.00%);-',
+        "terminal_format": ".2%",
+    },
+    {
+        "key": "equity_irr",
+        "title": "EQUITY IRR",
+        "cell": "B12",
+        "unit": "%",
+        "number_format": '0.00%;[Red](0.00%);-',
+        "terminal_format": ".2%",
+    },
+)
+
+# Kiểm tra nhãn để tránh đọc/ghi nhầm ô khi cấu trúc mô hình thay đổi.
+MODEL_CELL_LABELS = (
+    (INPUT_SHEET, "B12", "Công suất lắp đặt"),
+    (INPUT_SHEET, "B41", "Hệ số công suất ròng"),
+    (OUTPUT_SHEET, "D11", "Project NPV"),
+    (OUTPUT_SHEET, "D12", "Equity NPV"),
+    (OUTPUT_SHEET, "A11", "Project IRR"),
+    (OUTPUT_SHEET, "A12", "Equity IRR"),
+)
 
 CAPACITIES_MW = tuple(range(60, 181, 20))
 CAPACITY_FACTORS_PERCENT = tuple(range(25, 37))
+TABLE_GAP_ROWS = 2
 
 # Excel constants, khai báo trực tiếp để không phụ thuộc
 # win32com.client.constants.
@@ -88,34 +135,58 @@ def excel_color(red: int, green: int, blue: int) -> int:
     return red + green * 256 + blue * 65536
 
 
-def create_results_workbook(excel, results):
-    """Tạo workbook kết quả mới trong Excel nhưng không lưu xuống ổ đĩa."""
-    result_workbook = excel.Workbooks.Add()
-    result_sheet = result_workbook.Worksheets(1)
-    result_sheet.Name = "Project NPV"
+def validate_model_layout(workbook) -> None:
+    """Xác nhận các ô quan trọng vẫn đúng với cấu trúc mô hình hiện tại."""
+    mismatches = []
+    for sheet_name, label_cell, expected_label in MODEL_CELL_LABELS:
+        actual_label = workbook.Worksheets(sheet_name).Range(label_cell).Value2
+        if str(actual_label).strip() != expected_label:
+            mismatches.append(
+                f'{sheet_name}!{label_cell}: cần "{expected_label}", '
+                f"nhưng đang là {actual_label!r}"
+            )
 
-    # Chỉ giữ lại một worksheet trong workbook kết quả.
-    while result_workbook.Worksheets.Count > 1:
-        result_workbook.Worksheets(
-            result_workbook.Worksheets.Count
-        ).Delete()
+    if mismatches:
+        raise ValueError(
+            "Cấu trúc workbook không khớp với phiên bản script:\n  - "
+            + "\n  - ".join(mismatches)
+        )
 
+
+def read_numeric_result(cell, metric, capacity_mw: int, cf_percent: int) -> float:
+    """Đọc và kiểm tra một chỉ tiêu số sau khi Excel tính lại."""
+    value = cell.Value2
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise ValueError(
+            f"{OUTPUT_SHEET}!{metric['cell']} ({metric['title']}) "
+            f"không trả về số tại MW={capacity_mw}, CF={cf_percent}%: "
+            f"{value!r}"
+        )
+    return float(value)
+
+
+def write_metric_table(result_sheet, metric, results, start_row: int) -> int:
+    """Ghi và định dạng một ma trận chỉ tiêu; trả về hàng cuối của ma trận."""
     last_column = len(CAPACITIES_MW) + 1
-    last_row = len(CAPACITY_FACTORS_PERCENT) + 3
+    header_row = start_row + 2
+    data_start_row = start_row + 3
+    last_row = data_start_row + len(CAPACITY_FACTORS_PERCENT) - 1
 
     title_range = result_sheet.Range(
-        result_sheet.Cells(1, 1),
-        result_sheet.Cells(1, last_column),
+        result_sheet.Cells(start_row, 1),
+        result_sheet.Cells(start_row, last_column),
     )
     title_range.Merge()
-    title_range.Value2 = "PROJECT NPV THEO CÔNG SUẤT VÀ HỆ SỐ CÔNG SUẤT"
+    title_range.Value2 = (
+        f"{metric['title']} THEO CÔNG SUẤT VÀ HỆ SỐ CÔNG SUẤT"
+    )
 
     unit_range = result_sheet.Range(
-        result_sheet.Cells(2, 1),
-        result_sheet.Cells(2, last_column),
+        result_sheet.Cells(start_row + 1, 1),
+        result_sheet.Cells(start_row + 1, last_column),
     )
     unit_range.Merge()
-    unit_range.Value2 = "Đơn vị: tỷ VND"
+    unit_range.Value2 = f"Đơn vị: {metric['unit']}"
 
     headers = ("CF \\ MW", *CAPACITIES_MW)
     table_rows = [
@@ -124,18 +195,17 @@ def create_results_workbook(excel, results):
     ]
 
     header_range = result_sheet.Range(
-        result_sheet.Cells(3, 1),
-        result_sheet.Cells(3, last_column),
+        result_sheet.Cells(header_row, 1),
+        result_sheet.Cells(header_row, last_column),
     )
     header_range.Value2 = (headers,)
 
     data_range = result_sheet.Range(
-        result_sheet.Cells(4, 1),
+        result_sheet.Cells(data_start_row, 1),
         result_sheet.Cells(last_row, last_column),
     )
     data_range.Value2 = tuple(table_rows)
 
-    # Định dạng tối giản, rõ ràng để có thể sử dụng ngay.
     dark_blue = excel_color(31, 78, 121)
     light_blue = excel_color(221, 235, 247)
     light_border = excel_color(191, 191, 191)
@@ -155,7 +225,7 @@ def create_results_workbook(excel, results):
     header_range.HorizontalAlignment = XL_CENTER
 
     row_header_range = result_sheet.Range(
-        result_sheet.Cells(4, 1),
+        result_sheet.Cells(data_start_row, 1),
         result_sheet.Cells(last_row, 1),
     )
     row_header_range.Interior.Color = light_blue
@@ -164,19 +234,19 @@ def create_results_workbook(excel, results):
     row_header_range.NumberFormat = "0%"
 
     capacity_header_range = result_sheet.Range(
-        result_sheet.Cells(3, 2),
-        result_sheet.Cells(3, last_column),
+        result_sheet.Cells(header_row, 2),
+        result_sheet.Cells(header_row, last_column),
     )
     capacity_header_range.NumberFormat = '0 "MW"'
 
-    npv_range = result_sheet.Range(
-        result_sheet.Cells(4, 2),
+    result_value_range = result_sheet.Range(
+        result_sheet.Cells(data_start_row, 2),
         result_sheet.Cells(last_row, last_column),
     )
-    npv_range.NumberFormat = '#,##0.00;[Red](#,##0.00);-'
+    result_value_range.NumberFormat = metric["number_format"]
 
     table_range = result_sheet.Range(
-        result_sheet.Cells(3, 1),
+        result_sheet.Cells(header_row, 1),
         result_sheet.Cells(last_row, last_column),
     )
     for border_index in range(7, 13):
@@ -185,10 +255,35 @@ def create_results_workbook(excel, results):
         border.Weight = XL_THIN
         border.Color = light_border
 
+    return last_row
+
+
+def create_results_workbook(excel, results):
+    """Tạo workbook mới chứa bốn ma trận trên cùng một sheet, chưa lưu."""
+    result_workbook = excel.Workbooks.Add()
+    result_sheet = result_workbook.Worksheets(1)
+    result_sheet.Name = "Kết quả"
+
+    # Chỉ giữ lại một worksheet trong workbook kết quả.
+    while result_workbook.Worksheets.Count > 1:
+        result_workbook.Worksheets(
+            result_workbook.Worksheets.Count
+        ).Delete()
+
+    start_row = 1
+    for metric in RESULT_METRICS:
+        last_row = write_metric_table(
+            result_sheet,
+            metric,
+            results[metric["key"]],
+            start_row,
+        )
+        start_row = last_row + TABLE_GAP_ROWS + 1
+
     result_sheet.Columns(1).ColumnWidth = 12
     result_sheet.Range(
         result_sheet.Columns(2),
-        result_sheet.Columns(last_column),
+        result_sheet.Columns(len(CAPACITIES_MW) + 1),
     ).ColumnWidth = 14
     result_sheet.Activate()
     result_sheet.Range("A1").Select()
@@ -197,7 +292,7 @@ def create_results_workbook(excel, results):
 
 
 def calculate_sensitivity(workbook_path: Path):
-    """Tính Project NPV và mở workbook kết quả chưa lưu trong Excel."""
+    """Tính bốn chỉ tiêu và mở workbook kết quả chưa lưu trong Excel."""
     try:
         import pythoncom
         import win32com.client
@@ -242,14 +337,20 @@ def calculate_sensitivity(workbook_path: Path):
 
         input_sheet = workbook.Worksheets(INPUT_SHEET)
         output_sheet = workbook.Worksheets(OUTPUT_SHEET)
+        validate_model_layout(workbook)
 
         capacity_cell = input_sheet.Range(CAPACITY_CELL)
         cf_cell = input_sheet.Range(CF_CELL)
-        project_npv_cell = output_sheet.Range(PROJECT_NPV_CELL)
+        output_cells = {
+            metric["key"]: output_sheet.Range(metric["cell"])
+            for metric in RESULT_METRICS
+        }
 
         original_capacity = capacity_cell.Value2
         original_cf = cf_cell.Value2
-        results: list[list[float]] = []
+        results: dict[str, list[list[float]]] = {
+            metric["key"]: [] for metric in RESULT_METRICS
+        }
 
         total_cases = len(CAPACITIES_MW) * len(CAPACITY_FACTORS_PERCENT)
         completed_cases = 0
@@ -262,7 +363,9 @@ def calculate_sensitivity(workbook_path: Path):
         )
 
         for cf_percent in CAPACITY_FACTORS_PERCENT:
-            row: list[float] = []
+            metric_rows: dict[str, list[float]] = {
+                metric["key"]: [] for metric in RESULT_METRICS
+            }
             cf_cell.Value2 = cf_percent / 100.0
 
             for capacity_mw in CAPACITIES_MW:
@@ -273,21 +376,20 @@ def calculate_sensitivity(workbook_path: Path):
                 excel.CalculateFullRebuild()
                 wait_for_excel(excel)
 
-                npv_value = project_npv_cell.Value2
-                if (
-                    isinstance(npv_value, bool)
-                    or not isinstance(npv_value, numbers.Real)
-                ):
-                    raise ValueError(
-                        f"{OUTPUT_SHEET}!{PROJECT_NPV_CELL} không trả về số "
-                        f"tại MW={capacity_mw}, CF={cf_percent}%: "
-                        f"{npv_value!r}"
+                for metric in RESULT_METRICS:
+                    metric_rows[metric["key"]].append(
+                        read_numeric_result(
+                            output_cells[metric["key"]],
+                            metric,
+                            capacity_mw,
+                            cf_percent,
+                        )
                     )
 
-                row.append(float(npv_value))
                 completed_cases += 1
 
-            results.append(row)
+            for metric in RESULT_METRICS:
+                results[metric["key"]].append(metric_rows[metric["key"]])
             print(
                 f"  Đã xong CF {cf_percent}% "
                 f"({completed_cases}/{total_cases} phương án)"
@@ -334,11 +436,14 @@ def calculate_sensitivity(workbook_path: Path):
         pythoncom.CoUninitialize()
 
 
-def format_terminal_table(results: Sequence[Sequence[float]]) -> str:
-    """Tạo bảng dễ đọc để in trên terminal."""
+def format_terminal_table(metric, results: Sequence[Sequence[float]]) -> str:
+    """Tạo một bảng chỉ tiêu dễ đọc để in trên terminal."""
     headers = ["CF \\ MW", *(f"{mw} MW" for mw in CAPACITIES_MW)]
     body = [
-        [f"{cf_percent}%", *(f"{value:,.2f}" for value in row)]
+        [
+            f"{cf_percent}%",
+            *(format(value, metric["terminal_format"]) for value in row),
+        ]
         for cf_percent, row in zip(CAPACITY_FACTORS_PERCENT, results)
     ]
 
@@ -356,7 +461,7 @@ def format_terminal_table(results: Sequence[Sequence[float]]) -> str:
     separator = "-+-".join("-" * width for width in widths)
     return "\n".join(
         [
-            "PROJECT NPV (TỶ VND)",
+            f"{metric['title']} ({metric['unit'].upper()})",
             format_row(headers),
             separator,
             *(format_row(row) for row in body),
@@ -375,9 +480,17 @@ def main() -> int:
         results = calculate_sensitivity(workbook_path)
 
         print()
-        print(format_terminal_table(results))
+        print(
+            "\n\n".join(
+                format_terminal_table(metric, results[metric["key"]])
+                for metric in RESULT_METRICS
+            )
+        )
         print()
-        print("Đã tạo workbook kết quả mới và mở trong Excel.")
+        print(
+            "Đã tạo workbook kết quả mới với 4 ma trận trên cùng một sheet "
+            "và mở trong Excel."
+        )
         print("Workbook kết quả chưa được lưu; hãy dùng Save hoặc Save As.")
         print(f'File nguồn "{WORKBOOK_NAME}" không bị thay đổi.')
         return 0
