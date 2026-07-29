@@ -41,7 +41,8 @@ WORKBOOK_NAME = "PTKTTC_Ver1.xlsx"
 
 INPUT_SHEET = "Input"
 CAPACITY_CELL = "D12"
-CF_CELL = "D41"
+CF_LABEL = "Hệ số công suất ròng"
+INPUT_VALUE_COLUMN = 4  # Cột D chứa giá trị input cùng hàng với nhãn.
 
 OUTPUT_SHEET = "Summary"
 
@@ -83,7 +84,6 @@ RESULT_METRICS = (
 # Kiểm tra nhãn để tránh đọc/ghi nhầm ô khi cấu trúc mô hình thay đổi.
 MODEL_CELL_LABELS = (
     (INPUT_SHEET, "B12", "Công suất lắp đặt"),
-    (INPUT_SHEET, "B41", "Hệ số công suất ròng"),
     (OUTPUT_SHEET, "D11", "Project NPV"),
     (OUTPUT_SHEET, "D12", "Equity NPV"),
     (OUTPUT_SHEET, "A11", "Project IRR"),
@@ -329,6 +329,59 @@ def validate_model_layout(workbook) -> None:
         )
 
 
+
+def normalize_label(value) -> str:
+    """Chuẩn hóa nhãn Excel để tìm ổn định khi có thừa khoảng trắng."""
+    if value is None:
+        return ""
+    return " ".join(str(value).split()).casefold()
+
+
+def find_input_value_cell(input_sheet, expected_label: str):
+    """Tìm nhãn trong UsedRange và trả về ô giá trị ở cột D cùng hàng."""
+    used_range = input_sheet.UsedRange
+    values = used_range.Value2
+
+    if used_range.Rows.Count == 1 and used_range.Columns.Count == 1:
+        value_rows = ((values,),)
+    elif used_range.Rows.Count == 1:
+        value_rows = (values,)
+    else:
+        value_rows = values
+
+    target = normalize_label(expected_label)
+    matches = []
+    first_row = int(used_range.Row)
+    first_column = int(used_range.Column)
+
+    for row_offset, row_values in enumerate(value_rows):
+        if not isinstance(row_values, tuple):
+            row_values = (row_values,)
+        for column_offset, value in enumerate(row_values):
+            if normalize_label(value) == target:
+                matches.append(
+                    (first_row + row_offset, first_column + column_offset)
+                )
+
+    if not matches:
+        raise ValueError(
+            f'Không tìm thấy nhãn "{expected_label}" trong sheet '
+            f'"{input_sheet.Name}".'
+        )
+    if len(matches) > 1:
+        locations = ", ".join(
+            input_sheet.Cells(row, column).Address(False, False)
+            for row, column in matches
+        )
+        raise ValueError(
+            f'Có nhiều ô mang nhãn "{expected_label}" trong sheet '
+            f'"{input_sheet.Name}": {locations}.'
+        )
+
+    label_row, _label_column = matches[0]
+    return input_sheet.Cells(label_row, INPUT_VALUE_COLUMN)
+
+
 def read_numeric_result(cell, metric, capacity_mw, cf_percent) -> float:
     """Đọc và kiểm tra một chỉ tiêu số sau khi Excel tính lại."""
     value = cell.Value2
@@ -523,7 +576,7 @@ def calculate_sensitivity(workbook_path: Path):
         validate_model_layout(workbook)
 
         capacity_cell = input_sheet.Range(CAPACITY_CELL)
-        cf_cell = input_sheet.Range(CF_CELL)
+        cf_cell = find_input_value_cell(input_sheet, CF_LABEL)
         output_cells = {
             metric["key"]: output_sheet.Range(metric["cell"])
             for metric in RESULT_METRICS
