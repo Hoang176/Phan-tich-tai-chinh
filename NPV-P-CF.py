@@ -20,7 +20,8 @@ Yêu cầu:
 Kết quả:
     - In bốn bảng kết quả trên terminal.
     - Tạo một workbook Excel mới với bốn bảng trên sheet "Kết quả".
-    - Sao chép nguyên sheet "Input" từ mô hình vào workbook kết quả.
+    - Tạo sheet "Input" mới và sao chép giá trị, định dạng, kích thước
+      hàng/cột từ mô hình; không sao chép công thức hoặc liên kết.
     - Chỉ tính lại mô hình một lần cho mỗi phương án rồi đọc cả bốn chỉ tiêu.
     - Không tự động lưu workbook kết quả; người dùng tự chọn Save/Save As.
     - Không lưu thay đổi vào PTKTTC_Ver1.xlsx.
@@ -115,6 +116,7 @@ XL_CALCULATION_DONE = 0
 XL_CENTER = -4108
 XL_THIN = 2
 XL_CONTINUOUS = 1
+XL_PASTE_FORMATS = -4122
 
 
 def resolve_workbook_path(arguments: Sequence[str]) -> Path:
@@ -487,8 +489,74 @@ def write_metric_table(result_sheet, metric, results, start_row: int) -> int:
     return last_row
 
 
+def copy_input_snapshot(
+    excel,
+    source_input_sheet,
+    result_workbook,
+    after_sheet,
+):
+    """Tạo sheet Input mới và sao chép giá trị, định dạng, kích thước."""
+    target_input_sheet = result_workbook.Worksheets.Add(After=after_sheet)
+    target_input_sheet.Name = INPUT_SHEET
+
+    source_range = source_input_sheet.UsedRange
+    first_row = int(source_range.Row)
+    first_column = int(source_range.Column)
+    last_row = first_row + int(source_range.Rows.Count) - 1
+    last_column = first_column + int(source_range.Columns.Count) - 1
+
+    target_range = target_input_sheet.Range(
+        target_input_sheet.Cells(first_row, first_column),
+        target_input_sheet.Cells(last_row, last_column),
+    )
+
+    # Value2 chỉ lấy giá trị hiện tại của ô, không mang công thức hoặc liên
+    # kết về workbook nguồn sang workbook kết quả.
+    target_range.Value2 = source_range.Value2
+
+    # Chỉ dán định dạng ô. Không dùng Worksheet.Copy nên không sao chép công
+    # thức, named range, validation hoặc liên kết ngoài của worksheet nguồn.
+    try:
+        source_range.Copy()
+        target_range.PasteSpecial(Paste=XL_PASTE_FORMATS)
+    finally:
+        excel.CutCopyMode = False
+
+    # Sao chép chính xác độ rộng, trạng thái ẩn của từng cột trong UsedRange.
+    for column_number in range(first_column, last_column + 1):
+        source_column = source_input_sheet.Columns(column_number)
+        target_column = target_input_sheet.Columns(column_number)
+        target_column.ColumnWidth = source_column.ColumnWidth
+        target_column.Hidden = source_column.Hidden
+
+    # Sao chép chính xác chiều cao, trạng thái ẩn của từng hàng trong UsedRange.
+    for row_number in range(first_row, last_row + 1):
+        source_row = source_input_sheet.Rows(row_number)
+        target_row = target_input_sheet.Rows(row_number)
+        target_row.RowHeight = source_row.RowHeight
+        target_row.Hidden = source_row.Hidden
+
+    # PasteSpecial(xlPasteFormats) có thể xử lý ô gộp khác nhau giữa các phiên
+    # bản Excel; duyệt và tái tạo rõ ràng để bố cục luôn giống sheet nguồn.
+    merged_addresses = set()
+    for row_number in range(first_row, last_row + 1):
+        for column_number in range(first_column, last_column + 1):
+            source_cell = source_input_sheet.Cells(row_number, column_number)
+            if not bool(source_cell.MergeCells):
+                continue
+            merge_address = source_cell.MergeArea.Address(False, False)
+            if merge_address in merged_addresses:
+                continue
+            target_merge_area = target_input_sheet.Range(merge_address)
+            if not bool(target_merge_area.MergeCells):
+                target_merge_area.Merge()
+            merged_addresses.add(merge_address)
+
+    return target_input_sheet
+
+
 def create_results_workbook(excel, results, source_input_sheet):
-    """Tạo workbook kết quả gồm bốn ma trận và bản sao nguyên sheet Input."""
+    """Tạo workbook kết quả gồm bốn ma trận và ảnh chụp sheet Input."""
     result_workbook = excel.Workbooks.Add()
     result_sheet = result_workbook.Worksheets(1)
     result_sheet.Name = "Kết quả"
@@ -499,12 +567,14 @@ def create_results_workbook(excel, results, source_input_sheet):
             result_workbook.Worksheets.Count
         ).Delete()
 
-    # Copy nguyên worksheet Input sau sheet Kết quả. Excel giữ lại công thức,
-    # định dạng, ghi chú, validation, độ rộng cột và chiều cao hàng.
-    source_input_sheet.Copy(After=result_sheet)
-    copied_input_sheet = result_workbook.Worksheets(result_sheet.Index + 1)
-    if copied_input_sheet.Name != INPUT_SHEET:
-        copied_input_sheet.Name = INPUT_SHEET
+    # Tạo sheet Input mới rồi chỉ sao chép giá trị, định dạng và kích thước.
+    # Không dùng Worksheet.Copy để tránh công thức/liên kết và lỗi COM Bad index.
+    copy_input_snapshot(
+        excel,
+        source_input_sheet,
+        result_workbook,
+        result_sheet,
+    )
 
     start_row = 1
     for metric in RESULT_METRICS:
@@ -743,7 +813,7 @@ def main() -> int:
         print()
         print(
             "Đã tạo workbook kết quả mới với 4 ma trận trên sheet Kết quả, "
-            "sao chép sheet Input và mở trong Excel."
+            "tạo sheet Input dạng bản chụp giá trị/định dạng và mở trong Excel."
         )
         print("Workbook kết quả chưa được lưu; hãy dùng Save hoặc Save As.")
         print(f'File nguồn "{WORKBOOK_NAME}" không bị thay đổi.')
