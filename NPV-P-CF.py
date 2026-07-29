@@ -372,7 +372,7 @@ def find_input_value_cell(input_sheet, expected_label: str):
         )
     if len(matches) > 1:
         locations = ", ".join(
-            input_sheet.Cells(row, column).Address(False, False)
+            str(input_sheet.Cells(row, column).Address)
             for row, column in matches
         )
         raise ValueError(
@@ -544,7 +544,7 @@ def copy_input_snapshot(
             source_cell = source_input_sheet.Cells(row_number, column_number)
             if not bool(source_cell.MergeCells):
                 continue
-            merge_address = source_cell.MergeArea.Address(False, False)
+            merge_address = str(source_cell.MergeArea.Address)
             if merge_address in merged_addresses:
                 continue
             target_merge_area = target_input_sheet.Range(merge_address)
