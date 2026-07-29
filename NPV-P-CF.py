@@ -53,7 +53,7 @@ RESULT_METRICS = (
         "title": "PROJECT NPV",
         "cell": "E11",
         "unit": "tỷ VND",
-        "number_format": '#,##0;[Red](#,##0);-',
+        "number_format": '#;[Red](#);-',
         "terminal_format": ",.0f",
     },
     {
@@ -61,7 +61,7 @@ RESULT_METRICS = (
         "title": "EQUITY NPV",
         "cell": "E12",
         "unit": "tỷ VND",
-        "number_format": '#,##0;[Red](#,##0);-',
+        "number_format": '#;[Red](#);-',
         "terminal_format": ",.0f",
     },
     {
@@ -69,7 +69,7 @@ RESULT_METRICS = (
         "title": "PROJECT IRR",
         "cell": "B11",
         "unit": "%",
-        "number_format": "0.00%",
+        "number_format": "0,0%",
         "terminal_format": ".2%",
     },
     {
@@ -77,7 +77,7 @@ RESULT_METRICS = (
         "title": "EQUITY IRR",
         "cell": "B12",
         "unit": "%",
-        "number_format": "0.00%",
+        "number_format": "0,0%",
         "terminal_format": ".2%",
     },
 )
@@ -590,7 +590,7 @@ def create_results_workbook(excel, results, source_input_sheet):
     result_sheet.Range(
         result_sheet.Columns(2),
         result_sheet.Columns(len(CAPACITIES_MW) + 1),
-    ).ColumnWidth = 14
+    ).ColumnWidth = 8
     result_sheet.Activate()
     result_sheet.Range("A1").Select()
     excel.ActiveWindow.DisplayGridlines = False
