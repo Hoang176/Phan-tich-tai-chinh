@@ -1,0 +1,8 @@
+{
+  "capacity_min": "60",
+  "capacity_max": "180",
+  "capacity_step": "10",
+  "cf_min": "25",
+  "cf_max": "36",
+  "cf_step": "1"
+}
