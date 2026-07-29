@@ -19,7 +19,8 @@ Yêu cầu:
 
 Kết quả:
     - In bốn bảng kết quả trên terminal.
-    - Tạo một workbook Excel mới, đưa bốn bảng vào cùng một sheet.
+    - Tạo một workbook Excel mới với bốn bảng trên sheet "Kết quả".
+    - Sao chép nguyên sheet "Input" từ mô hình vào workbook kết quả.
     - Chỉ tính lại mô hình một lần cho mỗi phương án rồi đọc cả bốn chỉ tiêu.
     - Không tự động lưu workbook kết quả; người dùng tự chọn Save/Save As.
     - Không lưu thay đổi vào PTKTTC_Ver1.xlsx.
@@ -433,8 +434,8 @@ def write_metric_table(result_sheet, metric, results, start_row: int) -> int:
     return last_row
 
 
-def create_results_workbook(excel, results):
-    """Tạo workbook mới chứa bốn ma trận trên cùng một sheet, chưa lưu."""
+def create_results_workbook(excel, results, source_input_sheet):
+    """Tạo workbook kết quả gồm bốn ma trận và bản sao nguyên sheet Input."""
     result_workbook = excel.Workbooks.Add()
     result_sheet = result_workbook.Worksheets(1)
     result_sheet.Name = "Kết quả"
@@ -444,6 +445,13 @@ def create_results_workbook(excel, results):
         result_workbook.Worksheets(
             result_workbook.Worksheets.Count
         ).Delete()
+
+    # Copy nguyên worksheet Input sau sheet Kết quả. Excel giữ lại công thức,
+    # định dạng, ghi chú, validation, độ rộng cột và chiều cao hàng.
+    source_input_sheet.Copy(After=result_sheet)
+    copied_input_sheet = result_workbook.Worksheets(result_sheet.Index + 1)
+    if copied_input_sheet.Name != INPUT_SHEET:
+        copied_input_sheet.Name = INPUT_SHEET
 
     start_row = 1
     for metric in RESULT_METRICS:
@@ -575,10 +583,20 @@ def calculate_sensitivity(workbook_path: Path):
         capacity_cell.Value2 = original_capacity
         cf_cell.Value2 = original_cf
 
-        result_workbook = create_results_workbook(excel, results)
+        # Tính lại sau khi hoàn nguyên để sheet Input được sao chép đúng với
+        # bộ giả định ban đầu, không giữ trạng thái của phương án cuối cùng.
+        excel.CalculateFullRebuild()
+        wait_for_excel(excel)
 
-        # Đóng file nguồn mà không lưu, chỉ giữ workbook kết quả mới trong
-        # Excel. Workbook kết quả chưa có đường dẫn cho đến khi người dùng tự
+        result_workbook = create_results_workbook(
+            excel,
+            results,
+            input_sheet,
+        )
+
+        # Đóng file nguồn mà không lưu, chỉ giữ workbook kết quả mới (gồm
+        # sheet Kết quả và bản sao sheet Input) trong Excel. Workbook kết quả
+        # chưa có đường dẫn cho đến khi người dùng tự
         # chọn Save hoặc Save As.
         workbook.Close(SaveChanges=False)
         workbook = None
@@ -671,8 +689,8 @@ def main() -> int:
         )
         print()
         print(
-            "Đã tạo workbook kết quả mới với 4 ma trận trên cùng một sheet "
-            "và mở trong Excel."
+            "Đã tạo workbook kết quả mới với 4 ma trận trên sheet Kết quả, "
+            "sao chép sheet Input và mở trong Excel."
         )
         print("Workbook kết quả chưa được lưu; hãy dùng Save hoặc Save As.")
         print(f'File nguồn "{WORKBOOK_NAME}" không bị thay đổi.')
