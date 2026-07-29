@@ -69,7 +69,7 @@ RESULT_METRICS = (
         "title": "PROJECT IRR",
         "cell": "B11",
         "unit": "%",
-        "number_format": '0.00%;[Red](0.00%);-',
+        "number_format": "0.00%",
         "terminal_format": ".2%",
     },
     {
@@ -77,7 +77,7 @@ RESULT_METRICS = (
         "title": "EQUITY IRR",
         "cell": "B12",
         "unit": "%",
-        "number_format": '0.00%;[Red](0.00%);-',
+        "number_format": "0.00%",
         "terminal_format": ".2%",
     },
 )
