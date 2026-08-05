@@ -53,7 +53,8 @@ RESULT_METRICS = (
         "title": "PROJECT NPV",
         "cell": "E11",
         "unit": "tỷ VND",
-        "number_format": '#;[Red](#);-',
+        "number_format": '#,##0;[Red](#,##0);-',
+        "fallback_number_format": "#,##0",
         "terminal_format": ",.0f",
     },
     {
@@ -61,7 +62,8 @@ RESULT_METRICS = (
         "title": "EQUITY NPV",
         "cell": "E12",
         "unit": "tỷ VND",
-        "number_format": '#;[Red](#);-',
+        "number_format": '#,##0;[Red](#,##0);-',
+        "fallback_number_format": "#,##0",
         "terminal_format": ",.0f",
     },
     {
@@ -69,7 +71,8 @@ RESULT_METRICS = (
         "title": "PROJECT IRR",
         "cell": "B11",
         "unit": "%",
-        "number_format": "0,0%",
+        "number_format": "0.00%",
+        "fallback_number_format": "0%",
         "terminal_format": ".2%",
     },
     {
@@ -77,7 +80,8 @@ RESULT_METRICS = (
         "title": "EQUITY IRR",
         "cell": "B12",
         "unit": "%",
-        "number_format": "0,0%",
+        "number_format": "0.00%",
+        "fallback_number_format": "0%",
         "terminal_format": ".2%",
     },
 )
@@ -313,6 +317,54 @@ def excel_color(red: int, green: int, blue: int) -> int:
     return red + green * 256 + blue * 65536
 
 
+def set_number_format_compat(
+    cell_range,
+    preferred_format: str,
+    fallback_format: str = "General",
+) -> str | None:
+    """Gán định dạng số mà không làm dừng chương trình do khác biệt locale.
+
+    Một số bản Excel bản địa hóa từ chối mã tùy chỉnh có màu, nhiều phần
+    hoặc chuỗi literal khi gán qua ``Range.NumberFormat``. Hàm thử lần lượt
+    định dạng đầy đủ, định dạng đơn giản và ``General``. Nếu Excel không nhận
+    định dạng cho cả Range, hàm thử lại từng ô trước khi bỏ qua định dạng.
+
+    Giá trị và kết quả tính toán không bị thay đổi khi phải dùng fallback.
+    """
+    formats = []
+    for candidate in (preferred_format, fallback_format, "General"):
+        if candidate and candidate not in formats:
+            formats.append(candidate)
+
+    cells = cell_range.Cells
+    cell_count = int(cells.Count)
+
+    for candidate in formats:
+        try:
+            cell_range.NumberFormat = candidate
+            return candidate
+        except Exception:
+            pass
+
+        try:
+            for index in range(1, cell_count + 1):
+                cells.Item(index).NumberFormat = candidate
+            return candidate
+        except Exception:
+            pass
+
+    try:
+        address = str(cell_range.Address)
+    except Exception:
+        address = "(không xác định)"
+    print(
+        f'CẢNH BÁO: Excel không nhận định dạng số cho vùng {address}; '
+        "dữ liệu vẫn được giữ nguyên.",
+        file=sys.stderr,
+    )
+    return None
+
+
 def validate_model_layout(workbook) -> None:
     """Xác nhận các ô quan trọng vẫn đúng với cấu trúc mô hình hiện tại."""
     mismatches = []
@@ -462,19 +514,27 @@ def write_metric_table(result_sheet, metric, results, start_row: int) -> int:
     row_header_range.Interior.Color = light_blue
     row_header_range.Font.Bold = True
     row_header_range.HorizontalAlignment = XL_CENTER
-    row_header_range.NumberFormat = "0%"
+    set_number_format_compat(row_header_range, "0%")
 
     capacity_header_range = result_sheet.Range(
         result_sheet.Cells(header_row, 2),
         result_sheet.Cells(header_row, last_column),
     )
-    capacity_header_range.NumberFormat = '0 "MW"'
+    set_number_format_compat(
+        capacity_header_range,
+        '0 "MW"',
+        "0",
+    )
 
     result_value_range = result_sheet.Range(
         result_sheet.Cells(data_start_row, 2),
         result_sheet.Cells(last_row, last_column),
     )
-    result_value_range.NumberFormat = metric["number_format"]
+    set_number_format_compat(
+        result_value_range,
+        metric["number_format"],
+        metric["fallback_number_format"],
+    )
 
     table_range = result_sheet.Range(
         result_sheet.Cells(header_row, 1),
@@ -590,7 +650,7 @@ def create_results_workbook(excel, results, source_input_sheet):
     result_sheet.Range(
         result_sheet.Columns(2),
         result_sheet.Columns(len(CAPACITIES_MW) + 1),
-    ).ColumnWidth = 8
+    ).ColumnWidth = 14
     result_sheet.Activate()
     result_sheet.Range("A1").Select()
     excel.ActiveWindow.DisplayGridlines = False
